@@ -229,13 +229,16 @@ test('getTransactions binds filter values and pages by keyset, never OFFSET', as
   assert.match(sql, /\(ledger, hash\) < \(SELECT ledger, hash FROM transactions WHERE hash = \$\d+ AND network = \$1\)/);
 });
 
-test('getOperations builds WHERE clause only for provided filters', async () => {
+test('getOperations binds provided filters without interpolating values', async () => {
   const { pool, queries } = fakePool([]);
-  await getOperations(pool, { network: 'mainnet', account: 'GABC', limit: 10 });
-  assert.match(queries[0]?.sql ?? '', /WHERE network = \$1 AND source_account = \$2/);
+  const account = "G' OR TRUE --";
+  const type = "PAYMENT' OR TRUE --";
+  await getOperations(pool, { network: 'mainnet', account, type, limit: 10 });
+  assert.match(queries[0]?.sql ?? '', /WHERE network = \$1 AND source_account = \$2 AND type = \$3/);
   assert.match(queries[0]?.sql ?? '', /jsonb_build_object\(/);
   assert.doesNotMatch(queries[0]?.sql ?? '', /SELECT \*|details,\s*indexed_at/);
-  assert.deepEqual(queries[0]?.params, ['mainnet', 'GABC', 10]);
+  assert.deepEqual(queries[0]?.params, ['mainnet', account, type.toLowerCase(), 10]);
+  assert.doesNotMatch(queries[0]?.sql ?? '', /G' OR TRUE|PAYMENT' OR TRUE/);
 });
 
 test('getOperations is scoped to one network even with no filters', async () => {
@@ -362,8 +365,10 @@ test('accounts can be listed in address order instead', async () => {
 test('getOperations uses an ascending tuple keyset when requested', async () => {
   const { pool, queries } = fakePool([]);
   await getOperations(pool, { network: 'mainnet', cursor: 'op-9', limit: 10, order: 'ASC' });
-  assert.match(queries[0]?.sql ?? '', /\(ledger, id\) >/);
-  assert.match(queries[0]?.sql ?? '', /ORDER BY ledger ASC, id ASC/);
+  assert.match(queries[0]?.sql ?? '', /\(ledger, id\) > \(SELECT ledger, id FROM operations WHERE id = \$2 AND network = \$1\)/);
+  assert.match(queries[0]?.sql ?? '', /ORDER BY ledger ASC, id ASC LIMIT \$3/);
+  assert.deepEqual(queries[0]?.params, ['mainnet', 'op-9', 10]);
+  assert.doesNotMatch(queries[0]?.sql ?? '', /OFFSET/i);
 });
 
 test('getEventsByContract emits exactly the expected statement with every filter set', async () => {
