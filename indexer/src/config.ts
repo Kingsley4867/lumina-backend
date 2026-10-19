@@ -10,6 +10,7 @@ import { retentionWindowConflicts, RETENTION_TABLES, unlimitedRetentionWindows, 
 
 const log = subsystem('config');
 
+/** Validated indexer settings resolved from environment variables and defaults. */
 export interface Config {
   horizonUrl: string;
   horizonAuthToken: string | undefined;
@@ -48,11 +49,16 @@ export interface Config {
   healthPort: number;
   ledgerRetryAttempts: number;
   ledgerRetryBaseMs: number;
+  /** Freshness window for a network's cached account data, reducing repeat Horizon requests. */
   accountCacheTtlMs: number;
+  /** Hard cap on cached accounts, bounding memory use when many addresses are observed. */
   accountCacheMaxSize: number;
+  /** Re-scan this many recent ledgers because event visibility can lag the reported RPC tip. */
   eventsSafetyLagLedgers: number;
   sorobanMinRequestIntervalMs: number;
+  /** Bounds event-processing work per poll cycle so a busy range cannot monopolize the indexer loop. */
   sorobanMaxEventsPerCycle: number;
+  /** How far back Soroban RPC event requests may look; distinct from database retention. */
   sorobanRetentionWindowLedgers: number;
   /**
    * Per-table retention windows in days of chain time; `0` keeps everything.
@@ -154,9 +160,9 @@ function redactDatabaseUrl(url: string): string {
 }
 
 /**
- * Env var holding a table's retention window, e.g. `RETENTION_OPERATIONS_DAYS`.
- * Derived from the table name rather than repeated, so adding a prunable table
- * to retention.ts cannot leave it without a way to configure.
+ * Derives the environment variable for a table's retention window, e.g.
+ * `RETENTION_OPERATIONS_DAYS`. Deriving it from the table name ensures a newly
+ * prunable table cannot be left without a corresponding setting.
  */
 export function retentionEnvVar(table: string): string {
   return `RETENTION_${table.toUpperCase()}_DAYS`;
@@ -209,6 +215,8 @@ export function loadConfig(): Config {
     registryContractId: optionalString('REGISTRY_CONTRACT_ID'),
     registryReadAccount: optionalString('REGISTRY_READ_ACCOUNT'),
     registryNetworkPassphrase: optionalString('REGISTRY_NETWORK_PASSPHRASE'),
+    // Registry reads are independent of the faster ledger poll; a minute keeps
+    // discovery reasonably fresh without repeatedly querying registry state.
     registryPollIntervalMs: intWithDefault('REGISTRY_POLL_INTERVAL_MS', 60_000, 1000),
     healthPort: intWithDefault('HEALTH_PORT', 9090, 1, 65535),
     // Retry policy for a ledger whose fetch/index fails. More attempts ride
@@ -218,11 +226,20 @@ export function loadConfig(): Config {
     // see the indexer environment-variable table in the README.
     ledgerRetryAttempts: intWithDefault('LEDGER_RETRY_ATTEMPTS', 3, 1),
     ledgerRetryBaseMs: intWithDefault('LEDGER_RETRY_BASE_MS', 500, 1),
+    // A five-minute freshness window avoids repeatedly fetching busy accounts
+    // every poll; the per-network cache and size cap bound the stale-data cost.
     accountCacheTtlMs: intWithDefault('ACCOUNT_CACHE_TTL_MS', 5 * 60 * 1000, 1),
+    // The hard cap complements the TTL: a long-running process cannot retain
+    // an unbounded number of one-off addresses.
     accountCacheMaxSize: 50_000,
+    // A short overlap is cheap to re-scan and avoids permanently skipping
+    // events that become visible after the RPC has reported its latest ledger.
     eventsSafetyLagLedgers: 3,
+    // Bound per-cycle work so a busy event range cannot stall other indexer work.
     sorobanMinRequestIntervalMs: intWithDefault('SOROBAN_MIN_REQUEST_INTERVAL_MS', 100, 1),
     sorobanMaxEventsPerCycle: intWithDefault('SOROBAN_MAX_EVENTS_PER_CYCLE', 5000, 100),
+    // Provider event-history availability varies; keep the default request
+    // window bounded and let operators widen it to match their provider.
     sorobanRetentionWindowLedgers: intWithDefault('SOROBAN_RETENTION_WINDOW_LEDGERS', 300_000, 1),
     retentionWindows: parseRetentionWindows(),
     // Once an hour by default: long enough that the pass is not itself a load
